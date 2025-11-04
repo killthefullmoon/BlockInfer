@@ -1,13 +1,10 @@
-from collections import deque
 import torch
 from torch.nn import functional as F
-import numpy as np
 
-from BlockInfer.config import Config
-from BlockInfer.engine.sequence import Sequence, SequenceStatus, RunType
-from BlockInfer.engine.block_manager import BlockManager
-from BlockInfer.layers.sampler import sample_with_temperature_topk_topp
-from flashinfer.logits_processor import LogitsPipe, Temperature, Softmax, TopP, TopK, Sample
+from blockinfer.config import Config
+from blockinfer.engine.sequence import Sequence, SequenceStatus, RunType
+from blockinfer.engine.block_manager import BlockManager
+from flashinfer.logits_processor import LogitsPipe, Temperature, Softmax, TopP, TopK
 
 
 class Scheduler:
@@ -73,15 +70,39 @@ class Scheduler:
         
         elif run_type == RunType.DENOISE:
             start_idx = 0
+            # If all sampling params are the same, compute once and reuse
             if self.consistent_sampling_params:
                 if seqs[0].top_k > 0:
-                    probs = self.sample_pipe(logits, temperature=seqs[0].temperature, top_k=seqs[0].top_k, top_p=seqs[0].top_p) 
+                    probs = self.sample_pipe(logits, temperature=seqs[0].temperature, top_k=seqs[0].top_k, top_p=seqs[0].top_p)
                 else:
                     probs = self.sample_pipe_topk0(logits, temperature=seqs[0].temperature, top_p=seqs[0].top_p)
+                # Single multinomial for the whole batch
+                all_sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                all_sampled_p = torch.gather(probs, -1, all_sampled.unsqueeze(-1)).squeeze(-1)
+                # Precompute a device/dtype-consistent -inf scalar
+                neg_inf_global = probs.new_full((), float('-inf'))
             for seq in seqs:
                 # Extract the part of the tensors relevant to this sequence
                 if seq.status == SequenceStatus.DENOISING:
                     block_len = seq.block_length
+                    # Cache and reuse the GPU tensor for the intermediate block to avoid re-creation each step
+                    t = getattr(seq, "_intermediate_block_tensor", None)
+                    if (
+                        t is None
+                        or t.device != logits.device
+                        or t.numel() != block_len
+                    ):
+                        t = torch.tensor(seq.intermediate_block_tokens, device=logits.device)
+                        setattr(seq, "_intermediate_block_tensor", t)
+                    current_block_tensor = t
+                    mask_index = (current_block_tensor == self.mask_token_id)
+                    # If no masks remain, mark as saving/finished without doing sampling work
+                    if not mask_index.any():
+                        seq.status = SequenceStatus.FINISHED if seq.is_finished else SequenceStatus.SAVING
+                        seq.num_to_transfer = 0
+                        start_idx += block_len
+                        continue
+
                     if not self.consistent_sampling_params:
                         if seq.top_k > 0:
                             probs = self.sample_pipe(logits[start_idx : start_idx + block_len], temperature=seq.temperature, top_k=seq.top_k, top_p=seq.top_p) 
@@ -90,34 +111,44 @@ class Scheduler:
                         seq_x0 = torch.multinomial(probs, num_samples=1).squeeze(-1) 
                         seq_x0_p = torch.gather(probs, -1, seq_x0.unsqueeze(-1)).squeeze(-1)    
                     else:
-                        seq_x0 = torch.multinomial(probs[start_idx : start_idx + block_len], num_samples=1).squeeze(-1) 
-                        seq_x0_p = torch.gather(probs[start_idx : start_idx + block_len], -1, seq_x0.unsqueeze(-1)).squeeze(-1)    
-                    
-                    current_block_tensor = torch.tensor(seq.intermediate_block_tokens, device=logits.device)
-                    mask_index = (current_block_tensor == self.mask_token_id)
+                        seq_x0 = all_sampled[start_idx : start_idx + block_len]
+                        seq_x0_p = all_sampled_p[start_idx : start_idx + block_len]
+
                     num_to_transfer = seq.num_transfer_tokens_per_step[seq.current_denoising_step]
-                    
-                    transfer_index = torch.zeros_like(seq_x0, dtype=torch.bool)
+                    # Reuse a per-sequence transfer_index buffer to avoid reallocations
+                    transfer_index = getattr(seq, "_transfer_index", None)
+                    if (
+                        transfer_index is None
+                        or transfer_index.device != seq_x0.device
+                        or transfer_index.numel() != seq_x0.numel()
+                    ):
+                        transfer_index = torch.zeros_like(seq_x0, dtype=torch.bool)
+                        setattr(seq, "_transfer_index", transfer_index)
+                    else:
+                        transfer_index.zero_()
                     
                     if seq.remasking_strategy == 'sequential':
                         if mask_index.any():
-                            first_mask_pos = mask_index.nonzero(as_tuple=True)[0].min().item()
+                            first_mask_pos = torch.argmax(mask_index).item()
                             end_pos = min(first_mask_pos + num_to_transfer, block_len)
                             transfer_index[first_mask_pos:end_pos] = True
                     
                     elif 'low_confidence_static' in seq.remasking_strategy:
-                        confidence = torch.where(mask_index, seq_x0_p, -np.inf)
+                        neg_inf = neg_inf_global if self.consistent_sampling_params else seq_x0_p.new_tensor(float('-inf'))
+                        confidence = torch.where(mask_index, seq_x0_p, neg_inf)
                         # For dynamic, add threshold logic here if desired
                         _, top_indices = torch.topk(confidence, num_to_transfer)
                         transfer_index[top_indices] = True
                     
                     elif 'low_confidence_dynamic' in seq.remasking_strategy:
-                        confidence = torch.where(mask_index, seq_x0_p, -np.inf)
-                        transfer_index = torch.where(confidence > seq.dynamic_threshold, True, False)
-                        if sum(transfer_index) < num_to_transfer:
+                        neg_inf = neg_inf_global if self.consistent_sampling_params else seq_x0_p.new_tensor(float('-inf'))
+                        confidence = torch.where(mask_index, seq_x0_p, neg_inf)
+                        transfer_index = confidence > seq.dynamic_threshold
+                        if int(transfer_index.sum().item()) < num_to_transfer:
                             _, top_indices = torch.topk(confidence, num_to_transfer)
                             transfer_index[top_indices] = True
-                        num_to_transfer = transfer_index.sum().item() if transfer_index.sum().item() > 0 else num_to_transfer
+                        sel = int(transfer_index.sum().item())
+                        num_to_transfer = sel if sel > 0 else num_to_transfer
                     elif 'entropy_bounded' in seq.remasking_strategy:
                         block_probs = probs[start_idx : start_idx + block_len]
                         P = block_probs[mask_index]
@@ -125,7 +156,7 @@ class Scheduler:
                         entropies = -(P.clamp_min(eps) * (P.clamp_min(eps)).log()).sum(dim=-1)
                         ent_sorted, order = torch.sort(entropies, dim=0, descending=False)
                         cumsum = torch.cumsum(ent_sorted, dim=0)
-                        k = torch.searchsorted(cumsum, torch.tensor(seq.eb_threshold, device=P.device), right=False).item()
+                        k = torch.searchsorted(cumsum, P.new_tensor(seq.eb_threshold), right=False).item()
                         if k == 0:
                             k = 1
                         # print(k)
@@ -135,13 +166,10 @@ class Scheduler:
                         num_to_transfer = k
 
                     # update
-                    new_block_list = current_block_tensor.tolist()
-                    accepted_tokens = seq_x0[transfer_index].tolist()
-                    original_indices = transfer_index.nonzero(as_tuple=True)[0].tolist()
-
-                    for idx, token in zip(original_indices, accepted_tokens):
-                        new_block_list[idx] = token
-                    seq.intermediate_block_tokens = new_block_list
+                    # In-place update on cached tensor, then sync back to list for IPC compatibility
+                    if transfer_index.any():
+                        current_block_tensor[transfer_index] = seq_x0[transfer_index]
+                    seq.intermediate_block_tokens = current_block_tensor.tolist()
                     
                     seq.current_denoising_step += 1
                     
@@ -168,3 +196,4 @@ class Scheduler:
         self.running = [seq for seq in self.running if not seq.is_finished]
         for seq in finished_seqs:
             self.block_manager.deallocate(seq)
+

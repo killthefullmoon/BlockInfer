@@ -1,8 +1,8 @@
 from collections import deque
 import xxhash
-import numpy as np
+from array import array
 
-from BlockInfer.engine.sequence import Sequence
+from blockinfer.engine.sequence import Sequence
 
 
 class Block:
@@ -35,10 +35,15 @@ class BlockManager:
 
     @classmethod
     def compute_hash(cls, token_ids: list[int], prefix: int = -1):
+        """Compute rolling xxhash over a list of token ids.
+
+        Uses Python's array('Q') to avoid NumPy overhead per call.
+        """
         h = xxhash.xxh64()
         if prefix != -1:
             h.update(prefix.to_bytes(8, "little"))
-        h.update(np.array(token_ids).tobytes())
+        # token ids are non-negative; pack as 64-bit unsigned
+        h.update(array('Q', token_ids).tobytes())
         return h.intdigest()
 
     def _allocate_block(self, block_id: int) -> Block:
@@ -68,15 +73,24 @@ class BlockManager:
             if block_id == -1 or self.blocks[block_id].token_ids != token_ids:
                 cache_miss = True
             if cache_miss:
-                block_id = self.free_block_ids[0]
-                block = self._allocate_block(block_id)
+                # O(1) pop instead of index+remove
+                block_id = self.free_block_ids.popleft()
+                block = self.blocks[block_id]
+                assert block.ref_count == 0
+                block.reset()
+                self.used_block_ids.add(block_id)
             else:
                 seq.num_cached_tokens += self.block_size
                 if block_id in self.used_block_ids:
                     block = self.blocks[block_id]
                     block.ref_count += 1
                 else:
-                    block = self._allocate_block(block_id)
+                    # Cache hit on a free block: allocate it
+                    block = self.blocks[block_id]
+                    assert block.ref_count == 0
+                    block.reset()
+                    self.free_block_ids.remove(block_id)
+                    self.used_block_ids.add(block_id)
             if h != -1:
                 block.update(h, token_ids)
                 self.hash_to_block_id[h] = block_id

@@ -21,8 +21,9 @@ class LinearBase(nn.Module):
         self.input_size = input_size
         self.output_size = output_size
         self.tp_dim = tp_dim
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        initialized = dist.is_available() and dist.is_initialized()
+        self.tp_rank = dist.get_rank() if initialized else 0
+        self.tp_size = dist.get_world_size() if initialized else 1
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
@@ -116,7 +117,8 @@ class QKVParallelLinear(ColumnParallelLinear):
         self.head_size = head_size
         self.total_num_heads = total_num_heads
         self.total_num_kv_heads = total_num_kv_heads or total_num_heads
-        tp_size = dist.get_world_size()
+        initialized = dist.is_available() and dist.is_initialized()
+        tp_size = dist.get_world_size() if initialized else 1
         self.num_heads = divide(self.total_num_heads, tp_size)
         self.num_kv_heads = divide(self.total_num_kv_heads, tp_size)
         input_size = hidden_size

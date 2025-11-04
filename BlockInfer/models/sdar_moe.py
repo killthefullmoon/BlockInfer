@@ -4,16 +4,16 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
-from BlockInfer.layers.activation import SiluAndMul
-from BlockInfer.layers.layernorm import RMSNorm
-from BlockInfer.layers.linear import (
+from blockinfer.layers.activation import SiluAndMul
+from blockinfer.layers.layernorm import RMSNorm
+from blockinfer.layers.linear import (
     MergedColumnParallelLinear,
     RowParallelLinear,
     ReplicatedLinear,
 )
-from BlockInfer.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
-from BlockInfer.kernels import fused_moe
-from BlockInfer.models.sdar import SDARAttention as SDARMoeAttention
+from blockinfer.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from blockinfer.kernels import fused_moe
+from blockinfer.models.sdar import SDARAttention as SDARMoeAttention
 # --------------------------------------------------------------------------- #
 #                               LOW-LEVEL BLOCKS                              #
 # --------------------------------------------------------------------------- #

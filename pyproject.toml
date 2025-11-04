@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "BlockInfer"
+name = "blockinfer"
 version = "0.1.0"
 authors = [{ name = "Hui Shen" }]
 license = "MIT"
@@ -22,5 +22,5 @@ dependencies = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["BlockInfer*"]
+include = ["blockinfer*"]
 

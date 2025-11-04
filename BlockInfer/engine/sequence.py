@@ -1,7 +1,7 @@
 from copy import copy
 from enum import Enum, auto
 from itertools import count
-from BlockInfer.sampling_params import SamplingParams
+from blockinfer.sampling_params import SamplingParams
 
 
 class SequenceStatus(Enum):

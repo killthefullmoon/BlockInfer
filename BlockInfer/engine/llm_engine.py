@@ -10,12 +10,12 @@ from torch import nn
 from contextlib import nullcontext
 import torch.profiler as torch_profiler
 
-from BlockInfer.config import Config
-from BlockInfer.sampling_params import SamplingParams
-from BlockInfer.engine.sequence import Sequence, RunType
-from BlockInfer.engine.scheduler import Scheduler
-from BlockInfer.engine.model_runner import ModelRunner
-from BlockInfer.utils.loader import load_from_hf_model
+from blockinfer.config import Config
+from blockinfer.sampling_params import SamplingParams
+from blockinfer.engine.sequence import Sequence, RunType
+from blockinfer.engine.scheduler import Scheduler
+from blockinfer.engine.model_runner import ModelRunner
+from blockinfer.utils.loader import load_from_hf_model
 
 
 class LLMEngine:

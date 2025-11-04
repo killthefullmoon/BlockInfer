@@ -1,5 +1,5 @@
-from BlockInfer.llm import LLM
-from BlockInfer.sampling_params import SamplingParams
+from .llm import LLM
+from .sampling_params import SamplingParams
 
 
 __all__ = [

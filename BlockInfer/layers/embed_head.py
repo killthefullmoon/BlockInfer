@@ -3,8 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from BlockInfer.engine.sequence import RunType
-from BlockInfer.utils.context import get_context
+from blockinfer.engine.sequence import RunType
+from blockinfer.utils.context import get_context
 
 
 class VocabParallelEmbedding(nn.Module):
@@ -15,8 +15,10 @@ class VocabParallelEmbedding(nn.Module):
         embedding_dim: int,
     ):
         super().__init__()
-        self.tp_rank = dist.get_rank()
-        self.tp_size = dist.get_world_size()
+        # Safe defaults when torch.distributed is not initialized
+        initialized = dist.is_available() and dist.is_initialized()
+        self.tp_rank = dist.get_rank() if initialized else 0
+        self.tp_size = dist.get_world_size() if initialized else 1
         assert num_embeddings % self.tp_size == 0
         self.num_embeddings = num_embeddings
         self.num_embeddings_per_partition = self.num_embeddings // self.tp_size

@@ -2,12 +2,12 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
-from BlockInfer.layers.activation import SiluAndMul
-from BlockInfer.layers.attention import BlockAttention
-from BlockInfer.layers.layernorm import RMSNorm
-from BlockInfer.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
-from BlockInfer.layers.rotary_embedding import get_rope
-from BlockInfer.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
+from blockinfer.layers.activation import SiluAndMul
+from blockinfer.layers.attention import BlockAttention
+from blockinfer.layers.layernorm import RMSNorm
+from blockinfer.layers.linear import QKVParallelLinear, MergedColumnParallelLinear, RowParallelLinear
+from blockinfer.layers.rotary_embedding import get_rope
+from blockinfer.layers.embed_head import VocabParallelEmbedding, ParallelLMHead
 
 
 class SDARAttention(nn.Module):
@@ -25,7 +25,8 @@ class SDARAttention(nn.Module):
         rope_scaling: tuple | None = None,
     ) -> None:
         super().__init__()
-        tp_size = dist.get_world_size()
+        initialized = dist.is_available() and dist.is_initialized()
+        tp_size = dist.get_world_size() if initialized else 1
         self.total_num_heads = num_heads
         assert self.total_num_heads % tp_size == 0
         self.num_heads = self.total_num_heads // tp_size

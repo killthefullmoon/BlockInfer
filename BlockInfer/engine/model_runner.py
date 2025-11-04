@@ -5,12 +5,12 @@ import torch.distributed as dist
 from multiprocessing.synchronize import Event
 from multiprocessing.shared_memory import SharedMemory
 
-from BlockInfer.config import Config
-from BlockInfer.engine.sequence import Sequence, RunType, SequenceStatus
-from BlockInfer.models.sdar import SDARForCausalLM
-from BlockInfer.models.sdar_moe import SDARMoeForCausalLM
-from BlockInfer.utils.context import set_context, get_context, reset_context
-from BlockInfer.utils.loader import load_model
+from blockinfer.config import Config
+from blockinfer.engine.sequence import Sequence, RunType, SequenceStatus
+from blockinfer.models.sdar import SDARForCausalLM
+from blockinfer.models.sdar_moe import SDARMoeForCausalLM
+from blockinfer.utils.context import set_context, get_context, reset_context
+from blockinfer.utils.loader import load_model
 
 
 class ModelRunner:
@@ -24,8 +24,10 @@ class ModelRunner:
         self.rank = rank
         self.event = event
 
-        dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
-        torch.cuda.set_device(rank)
+        # Initialize distributed only when needed
+        if self.world_size > 1:
+            dist.init_process_group("nccl", "tcp://localhost:2333", world_size=self.world_size, rank=rank)
+            torch.cuda.set_device(rank)
         default_dtype = torch.get_default_dtype()
         torch.set_default_dtype(hf_config.torch_dtype)
         torch.set_default_device("cuda")
@@ -77,7 +79,8 @@ class ModelRunner:
         if not self.enforce_eager:
             del self.graphs, self.graph_pool
         torch.cuda.synchronize()
-        dist.destroy_process_group()
+        if self.world_size > 1:
+            dist.destroy_process_group()
 
     def loop(self):
         while True:
@@ -153,9 +156,6 @@ class ModelRunner:
             cu_seqlens_q.append(cu_seqlens_q[-1] + seqlen)
             max_seqlen_q = max(max_seqlen_q, seqlen)
             is_last_step.append(False)
-            # Slot mapping for prefill
-            if not seq.block_table:
-                continue
             # Slot mapping for prefill
             if not seq.block_table:
                 continue

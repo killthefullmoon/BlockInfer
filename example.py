@@ -1,5 +1,5 @@
 import os
-from BlockInfer import LLM, SamplingParams
+from blockinfer import LLM, SamplingParams
 from transformers import AutoTokenizer
 
 

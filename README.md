@@ -33,3 +33,4 @@ python example.py
 ```
 
 See `example.py` for usage. The API mirrors vLLM's interface with some differences in the `LLM.generate` method.
+

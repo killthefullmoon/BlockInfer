@@ -3,11 +3,11 @@ from torch import nn
 import triton
 import triton.language as tl
 
-from BlockInfer.utils.context import get_context
-from BlockInfer.engine.sequence import RunType
-from BlockInfer.kernels.triton.attention import sparse_attn_varlen
-# from BlockInfer.kernels.triton.attention import fused_kv_cache_attention
-# from BlockInfer.kernels.triton.attention import fused_kv_cache_attention_v5
+from blockinfer.utils.context import get_context
+from blockinfer.engine.sequence import RunType
+from blockinfer.kernels.triton.attention import sparse_attn_varlen
+# from blockinfer.kernels.triton.attention import fused_kv_cache_attention
+# from blockinfer.kernels.triton.attention import fused_kv_cache_attention_v5
 from flash_attn import flash_attn_with_kvcache
 
 
