@@ -164,6 +164,21 @@ class Scheduler:
                         # print(selected_token_indices)
                         transfer_index[selected_token_indices] = True
                         num_to_transfer = k
+                    
+                    elif seq.remasking_strategy == 'low_confidence':
+                        # LLaDA style: transfer tokens with highest confidence (probability)
+                        neg_inf = neg_inf_global if self.consistent_sampling_params else seq_x0_p.new_tensor(float('-inf'))
+                        confidence = torch.where(mask_index, seq_x0_p, neg_inf)
+                        _, top_indices = torch.topk(confidence, min(num_to_transfer, mask_index.sum().item()))
+                        transfer_index[top_indices] = True
+                    
+                    elif seq.remasking_strategy == 'random':
+                        # Random remasking: assign random confidence values
+                        random_conf = torch.rand(block_len, device=seq_x0.device)
+                        neg_inf = neg_inf_global if self.consistent_sampling_params else random_conf.new_tensor(float('-inf'))
+                        confidence = torch.where(mask_index, random_conf, neg_inf)
+                        _, top_indices = torch.topk(confidence, min(num_to_transfer, mask_index.sum().item()))
+                        transfer_index[top_indices] = True
 
                     # update
                     # In-place update on cached tensor, then sync back to list for IPC compatibility

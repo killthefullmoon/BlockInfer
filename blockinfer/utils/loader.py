@@ -120,9 +120,174 @@ def _load_expert_weight_to_fused(model: nn.Module, weight_name: str, weight_tens
             local_weight = weight_tensor.narrow(1, tp_rank * local_in, local_in)
             fused_tensor[expert_idx].copy_(local_weight)
 
+def _create_llada_weight_mapping(num_layers: int):
+    """Create weight mapping from HF LLaDA to BlockInfer LLaDA."""
+    mapping = {
+        # Global weights
+        'model.transformer.wte.weight': 'model.embed_tokens.weight',
+        'model.transformer.norm.weight': 'model.norm.weight',
+        'model.transformer.ff_out.weight': 'lm_head.weight',
+    }
+    
+    for i in range(num_layers):
+        # Attention output (attn_out not attention.out_proj!)
+        mapping[f'model.transformer.blocks.{i}.attn_out.weight'] = \
+            f'model.layers.{i}.self_attn.o_proj.weight'
+        
+        # MLP down projection
+        mapping[f'model.transformer.blocks.{i}.ff_out.weight'] = \
+            f'model.layers.{i}.mlp.down_proj.weight'
+        
+        # Norms (attn_norm and ff_norm, not attention_norm!)
+        mapping[f'model.transformer.blocks.{i}.attn_norm.weight'] = \
+            f'model.layers.{i}.input_layernorm.weight'
+        mapping[f'model.transformer.blocks.{i}.ff_norm.weight'] = \
+            f'model.layers.{i}.post_attention_layernorm.weight'
+        
+        # Note: q_proj, k_proj, v_proj → qkv_proj (fused)
+        # Note: ff_proj + up_proj → gate_up_proj (fused)
+        # Handled separately in load logic
+    
+    return mapping
+
+
+def _is_llada_model(model_path: str) -> bool:
+    """Check if the model path points to a LLaDA model."""
+    # Try local path first
+    files = glob(os.path.join(model_path, "*.safetensors"))
+    
+    if not files:
+        # Try HuggingFace model ID
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files
+            files_in_repo = list_repo_files(model_path)
+            safetensor_files = [f for f in files_in_repo if f.endswith('.safetensors')]
+            if safetensor_files:
+                # Download first file to check
+                first_file = hf_hub_download(model_path, safetensor_files[0])
+                files = [first_file]
+        except:
+            return False
+    
+    if not files:
+        return False
+    
+    # Check if weights use LLaDA naming (model.transformer.blocks)
+    try:
+        with safe_open(files[0], framework="pt", device="cpu") as f:
+            keys = list(f.keys())
+            return any('model.transformer.blocks' in k or 'transformer.blocks' in k for k in keys[:20])
+    except:
+        return False
+
+
 def load_model(model: nn.Module, path: str):
     _prepare_fused_tensors(model)
 
+    # Check if this is a LLaDA model
+    is_llada = _is_llada_model(path)
+    
+    if is_llada:
+        print("Detected LLaDA model, using custom weight mapping...")
+        num_layers = len([m for m in model.modules() if hasattr(m, 'self_attn')])
+        llada_mapping = _create_llada_weight_mapping(num_layers)
+        
+        # Get safetensors files (local or download from HF)
+        files = glob(os.path.join(path, "*.safetensors"))
+        if not files:
+            # Download from HuggingFace
+            from huggingface_hub import snapshot_download
+            print(f"Downloading model from HuggingFace: {path}")
+            local_path = snapshot_download(path, allow_patterns="*.safetensors")
+            files = glob(os.path.join(local_path, "*.safetensors"))
+        
+        # Load with LLaDA mapping
+        loaded_count = 0
+        
+        # First pass: collect all weights into memory
+        print("Loading all weights into memory...")
+        weight_cache = {}
+        for file in files:
+            print(f"  Reading {os.path.basename(file)}...")
+            with safe_open(file, "pt", "cpu") as f:
+                for key in f.keys():
+                    weight_cache[key] = f.get_tensor(key)
+        
+        print(f"✓ Loaded {len(weight_cache)} tensors into cache\n")
+        
+        # Second pass: map and copy weights
+        print("Mapping weights to BlockInfer architecture...")
+        
+        # Direct mappings
+        for hf_name, target_name in llada_mapping.items():
+            if hf_name in weight_cache:
+                try:
+                    param = model.get_parameter(target_name)
+                    param.data.copy_(weight_cache[hf_name])
+                    loaded_count += 1
+                except AttributeError:
+                    pass
+        
+        # Fuse QKV weights
+        qkv_count = 0
+        for i in range(num_layers):
+            # Correct naming: q_proj not attention.q_proj!
+            q_key = f'model.transformer.blocks.{i}.q_proj.weight'
+            k_key = f'model.transformer.blocks.{i}.k_proj.weight'
+            v_key = f'model.transformer.blocks.{i}.v_proj.weight'
+            
+            if q_key in weight_cache and k_key in weight_cache and v_key in weight_cache:
+                qkv_weight = torch.cat([
+                    weight_cache[q_key],
+                    weight_cache[k_key],
+                    weight_cache[v_key]
+                ], dim=0)
+                
+                target_name = f'model.layers.{i}.self_attn.qkv_proj.weight'
+                try:
+                    param = model.get_parameter(target_name)
+                    param.data.copy_(qkv_weight)
+                    qkv_count += 1
+                except AttributeError:
+                    pass
+            else:
+                if q_key not in weight_cache:
+                    print(f"⚠ Missing {q_key}")
+        
+        # Fuse gate_up weights
+        gate_up_count = 0
+        for i in range(num_layers):
+            gate_key = f'model.transformer.blocks.{i}.ff_proj.weight'
+            up_key = f'model.transformer.blocks.{i}.up_proj.weight'
+            
+            if gate_key in weight_cache and up_key in weight_cache:
+                gate_up_weight = torch.cat([
+                    weight_cache[gate_key],
+                    weight_cache[up_key]
+                ], dim=0)
+                
+                target_name = f'model.layers.{i}.mlp.gate_up_proj.weight'
+                try:
+                    param = model.get_parameter(target_name)
+                    param.data.copy_(gate_up_weight)
+                    gate_up_count += 1
+                except AttributeError:
+                    pass
+            else:
+                if gate_key not in weight_cache:
+                    print(f"⚠ Missing {gate_key}")
+                if up_key not in weight_cache:
+                    print(f"⚠ Missing {up_key}")
+        
+        total_loaded = loaded_count + qkv_count + gate_up_count
+        print(f"✓ Weight loading complete:")
+        print(f"  - Direct mappings: {loaded_count}")
+        print(f"  - QKV fusions: {qkv_count}")
+        print(f"  - Gate-Up fusions: {gate_up_count}")
+        print(f"  - Total: {total_loaded}\n")
+        return
+    
+    # Original load logic for SDAR
     packed_modules_mapping = getattr(model, "packed_modules_mapping", {})
     for file in glob(os.path.join(path, "*.safetensors")):
         with safe_open(file, "pt", "cpu") as f:

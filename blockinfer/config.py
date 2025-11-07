@@ -20,11 +20,17 @@ class Config:
     block_length: int = 4
 
     def __post_init__(self):
-        assert os.path.isdir(self.model)
+        # Support both local paths and HuggingFace model IDs
+        # Don't assert directory check - let HuggingFace handle model loading
         assert self.kvcache_block_size % 256 == 0
         assert 1 <= self.tensor_parallel_size <= 8
         self.hf_config = AutoConfig.from_pretrained(self.model, trust_remote_code=True)
-        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
+        
+        # Handle different config attribute names
+        max_pos = getattr(self.hf_config, 'max_position_embeddings', 
+                         getattr(self.hf_config, 'max_seq_len', 
+                                getattr(self.hf_config, 'n_positions', self.max_model_len)))
+        self.max_model_len = min(self.max_model_len, max_pos)
         assert self.max_num_batched_tokens >= self.max_model_len
         assert self.mask_token_id != -1, "Mask token ID must be set"
 
