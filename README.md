@@ -77,7 +77,31 @@ params = SamplingParams(
 
 outputs = llm.generate(prompts, params)
 ```
+### LLaDA Models
 
+```python
+from blockinfer import LLM, SamplingParams
+
+llm = LLM(
+    "GSAI-ML/LLaDA-8B-Instruct",
+    mask_token_id=tokenizer.mask_token_id or tokenizer.pad_token_id,
+    block_length=32
+)
+
+params = SamplingParams(
+    temperature=0.2,
+    topk=0,
+    topp=0.95,
+    max_tokens=512,
+    remasking_strategy="entropy_bounded",
+    block_length=16,
+    denoising_steps=512,
+    dynamic_threshold=0.0,
+)
+
+
+outputs = llm.generate(prompts, params)
+```
 See `example_llada_blockinfer.py` for complete LLaDA usage.
 
 **LLaDA Features**:
