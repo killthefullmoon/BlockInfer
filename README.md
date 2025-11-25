@@ -77,13 +77,13 @@ params = SamplingParams(
 
 outputs = llm.generate(prompts, params)
 ```
-### LLaDA Models
+### Dreams Models
 
 ```python
 from blockinfer import LLM, SamplingParams
 
 llm = LLM(
-    "GSAI-ML/LLaDA-8B-Instruct",
+    "Dream-org/Dream-v0-Instruct-7B",
     mask_token_id=tokenizer.mask_token_id or tokenizer.pad_token_id,
     block_length=32
 )
