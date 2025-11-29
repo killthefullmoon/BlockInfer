@@ -29,8 +29,8 @@ class LLMEngine:
         self.events = []
         
         # Only initialize multi-process tensor parallelism for non-LLaDA models
-        # (LLaDA currently only supports single-process execution)
-        if config.tensor_parallel_size > 1 and config.model_type != "llada":
+        # (LLaDA and Dream currently only support single-process execution)
+        if config.tensor_parallel_size > 1 and config.model_type not in ("llada", "dream"):
             ctx = mp.get_context("spawn")
             for i in range(1, config.tensor_parallel_size):
                 event = ctx.Event()
@@ -108,6 +108,292 @@ class LLMEngine:
         for p in self.ps:
             p.join()
 
+    # ------------------------------------------------------------------
+    # Dream diffusion_generate (native) through BlockInfer entrypoint
+    # ------------------------------------------------------------------
+    def _format_prompt_for_dream(self, prompt: str | list[int]) -> str:
+        if isinstance(prompt, list):
+            prompt_text = self.tokenizer.decode(prompt, skip_special_tokens=False)
+        else:
+            prompt_text = prompt
+        chat_template = getattr(self.tokenizer, "chat_template", None)
+        if chat_template:
+            prompt_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return prompt_text
+
+    def _dream_sample_tokens(
+        self,
+        logits: torch.Tensor,
+        temperature: float = 0.0,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        margin_confidence: bool = False,
+        neg_entropy: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if temperature > 0:
+            logits = logits / temperature
+        if top_p is not None and top_p < 1:
+            sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+            cumulative_probs = torch.cumsum(torch.softmax(sorted_logits, dim=-1), dim=-1)
+            sorted_indices_to_remove = cumulative_probs > top_p
+            sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+            sorted_indices_to_remove[..., 0] = 0
+            mask = torch.zeros_like(logits, dtype=torch.bool, device=logits.device)
+            mask = mask.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+            logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min)
+        if top_k is not None and top_k > 0:
+            top_k = min(top_k, logits.size(-1))
+            indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+            logits = logits.masked_fill(indices_to_remove, torch.finfo(logits.dtype).min)
+        probs = torch.softmax(logits, dim=-1)
+        if temperature > 0:
+            try:
+                x0 = torch.multinomial(probs, num_samples=1).squeeze(-1)
+                confidence = torch.gather(probs, -1, x0.unsqueeze(-1)).squeeze(-1)
+            except Exception:
+                confidence, x0 = probs.max(dim=-1)
+        else:
+            confidence, x0 = probs.max(dim=-1)
+        if margin_confidence:
+            sorted_probs, _ = torch.sort(probs, dim=-1, descending=True)
+            confidence = sorted_probs[:, 0] - sorted_probs[:, 1]
+        if neg_entropy:
+            eps = 1e-10
+            log_probs = torch.log(probs + eps)
+            confidence = torch.sum(probs * log_probs, dim=-1)
+        return confidence, x0
+
+    def _generate_dream(
+        self,
+        prompts: list[str] | list[list[int]],
+        sampling_params: SamplingParams | list[SamplingParams],
+        use_tqdm: bool = False,
+    ) -> list[dict]:
+        if not isinstance(prompts, list):
+            prompts = [prompts]
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
+        if any(sp != sampling_params[0] for sp in sampling_params[1:]):
+            raise ValueError("Dream generation requires identical sampling_params across the batch.")
+        sp = sampling_params[0]
+
+        formatted = [self._format_prompt_for_dream(p) for p in prompts]
+        enc = self.tokenizer(
+            formatted,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.config.max_model_len,
+        )
+        input_ids = enc.input_ids.to("cuda")
+        attention_mask = enc.attention_mask.to("cuda") if hasattr(enc, "attention_mask") else None
+
+        max_new = sp.max_tokens
+        steps = sp.denoising_steps if sp.denoising_steps is not None else max_new
+        eps = 1e-3
+
+        batch_size, prompt_len = input_ids.shape
+        max_length = prompt_len + max_new
+        mask_token_id = self.config.mask_token_id
+
+        # Pad inputs to max_length with mask_token_id
+        x = torch.full((batch_size, max_length), mask_token_id, device=input_ids.device, dtype=input_ids.dtype)
+        x[:, :prompt_len] = input_ids
+
+        if attention_mask is not None and torch.any(attention_mask == 0.0):
+            attn = torch.ones((batch_size, max_length), device=input_ids.device, dtype=attention_mask.dtype)
+            attn[:, :prompt_len] = attention_mask
+            tok_idx = attn.long().cumsum(-1) - 1
+            tok_idx.masked_fill_(attn == 0, 1)
+            attention_mask = torch.logical_and(
+                attn.unsqueeze(1).unsqueeze(-2),
+                attn.unsqueeze(1).unsqueeze(-1),
+            )
+        else:
+            tok_idx = None
+            attention_mask = "full"
+
+        timesteps = torch.linspace(1, eps, steps + 1, device=input_ids.device)
+        pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True) if use_tqdm else None
+
+        for i in range(steps):
+            mask_index = (x == mask_token_id)
+            logits = self.model_runner.model(x, attention_mask=attention_mask, tok_idx=tok_idx).logits
+            logits = torch.cat([logits[:, :1], logits[:, :-1]], dim=1)
+
+            mask_logits = logits[mask_index]
+            t = timesteps[i]
+            s = timesteps[i + 1]
+
+            alg = sp.remasking_strategy
+            if alg == "sequential":
+                alg_name = "origin"
+            elif "entropy" in alg:
+                alg_name = "entropy"
+            elif "low_confidence" in alg:
+                alg_name = "maskgit_plus"
+            else:
+                alg_name = "origin"
+
+            if alg_name == "origin":
+                p_transfer = 1 - s / t if i < steps - 1 else 1
+                x0 = torch.full_like(mask_logits, mask_token_id, device=x.device, dtype=torch.long)
+                transfer_index_t_s = torch.rand_like(mask_logits, device=x.device) < p_transfer
+                if transfer_index_t_s.any():
+                    _, sampled = self._dream_sample_tokens(
+                        mask_logits[transfer_index_t_s],
+                        temperature=sp.temperature,
+                        top_p=sp.topp if sp.topp < 1 else None,
+                        top_k=sp.topk if sp.topk > 0 else None,
+                    )
+                    x0[transfer_index_t_s] = sampled
+                x[mask_index] = x0.clone()
+            else:
+                if alg_name == "maskgit_plus":
+                    confidence, x0 = self._dream_sample_tokens(
+                        mask_logits,
+                        temperature=sp.temperature,
+                        top_p=sp.topp if sp.topp < 1 else None,
+                        top_k=sp.topk if sp.topk > 0 else None,
+                    )
+                elif alg_name == "entropy":
+                    confidence, x0 = self._dream_sample_tokens(
+                        mask_logits,
+                        temperature=sp.temperature,
+                        top_p=sp.topp if sp.topp < 1 else None,
+                        top_k=sp.topk if sp.topk > 0 else None,
+                        neg_entropy=True,
+                    )
+                else:
+                    raise RuntimeError(f"Unknown alg: {alg_name}")
+
+                num_mask_token = mask_index.sum(dim=-1)
+                number_transfer_tokens = (num_mask_token * (1 - s / t)).long()
+                number_transfer_tokens = torch.where(number_transfer_tokens > 0, number_transfer_tokens, num_mask_token)
+
+                full_confidence = torch.full_like(x, float("-inf"), device=x.device, dtype=logits.dtype)
+                full_confidence[mask_index] = confidence
+                x_candidates = torch.full_like(x, mask_token_id, device=x.device, dtype=torch.long)
+                x_candidates[mask_index] = x0.clone()
+
+                for b in range(batch_size):
+                    k = int(number_transfer_tokens[b].item())
+                    if k <= 0:
+                        continue
+                    fc = full_confidence[b]
+                    if sp.dynamic_threshold and sp.dynamic_threshold > 0 and "entropy" in alg_name:
+                        fc = fc / sp.dynamic_threshold
+                        fc = torch.softmax(fc, dim=-1)
+                        indices = torch.multinomial(fc, num_samples=k)
+                    else:
+                        _, indices = torch.topk(fc, k=k)
+                    x[b, indices] = x_candidates[b, indices]
+
+            if pbar:
+                pbar.update(0)
+
+        if pbar:
+            pbar.close()
+
+        results = []
+        for seq in x:
+            gen_tokens = seq[prompt_len:].tolist()
+            # Align with LLaDA decode: use tokenizer.decode directly
+            text = self.tokenizer.decode(gen_tokens)
+            results.append({"text": text, "token_ids": gen_tokens})
+        return results
+
+    def _format_prompt_for_dream(self, prompt: str | list[int]) -> str:
+        if isinstance(prompt, list):
+            prompt_text = self.tokenizer.decode(prompt, skip_special_tokens=False)
+        else:
+            prompt_text = prompt
+        chat_template = getattr(self.tokenizer, "chat_template", None)
+        if chat_template:
+            prompt_text = self.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt_text}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        return prompt_text
+
+    def _generate_dream(
+        self,
+        prompts: list[str] | list[list[int]],
+        sampling_params: SamplingParams | list[SamplingParams],
+        use_tqdm: bool = False,
+    ) -> list[dict]:
+        if not isinstance(prompts, list):
+            prompts = [prompts]
+        if not isinstance(sampling_params, list):
+            sampling_params = [sampling_params] * len(prompts)
+        assert len(sampling_params) == len(prompts)
+        if any(sp != sampling_params[0] for sp in sampling_params[1:]):
+            raise ValueError("Dream generation requires identical sampling_params across the batch.")
+        sp = sampling_params[0]
+
+        formatted = [self._format_prompt_for_dream(p) for p in prompts]
+        enc = self.tokenizer(
+            formatted,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=self.config.max_model_len,
+        )
+        input_ids = enc.input_ids.to("cuda")
+        attention_mask = enc.attention_mask.to("cuda") if hasattr(enc, "attention_mask") else None
+
+        steps = sp.denoising_steps if sp.denoising_steps is not None else sp.max_tokens
+        gen_kwargs = dict(
+            max_new_tokens=sp.max_tokens,
+            output_history=False,
+            return_dict_in_generate=True,
+            steps=steps,
+            temperature=sp.temperature,
+        )
+        if sp.topp is not None and sp.topp < 1:
+            gen_kwargs["top_p"] = sp.topp
+        if sp.topk is not None and sp.topk > 0:
+            gen_kwargs["top_k"] = sp.topk
+        alg_map = {
+            "entropy_bounded": "entropy",
+            "low_confidence_static": "maskgit_plus",
+            "low_confidence_dynamic": "entropy",
+            "low_confidence": "maskgit_plus",
+            "sequential": "origin",
+        }
+        gen_kwargs["alg"] = alg_map.get(sp.remasking_strategy, "entropy")
+        gen_kwargs["alg_temp"] = getattr(sp, "dynamic_threshold", 0.0) if "entropy" in gen_kwargs["alg"] else 0.0
+
+        pbar = tqdm(total=len(prompts), desc="Generating", dynamic_ncols=True) if use_tqdm else None
+        with torch.no_grad():
+            output = self.model_runner.model.diffusion_generate(
+                input_ids,
+                attention_mask=attention_mask,
+                **gen_kwargs,
+            )
+        if pbar:
+            pbar.update(len(prompts))
+            pbar.close()
+
+        sequences = output.sequences if hasattr(output, "sequences") else output
+        results = []
+        eos_token = self.tokenizer.eos_token
+        prompt_lens = attention_mask.sum(dim=-1) if attention_mask is not None else torch.tensor(
+            [ids.numel() for ids in input_ids], device=input_ids.device
+        )
+        for prompt_len, seq in zip(prompt_lens.tolist(), sequences):
+            generated = seq[prompt_len:].tolist()
+            text = self.tokenizer.decode(generated, skip_special_tokens=True)
+            if eos_token:
+                text = text.split(eos_token)[0]
+            results.append({"text": text, "token_ids": generated})
+        return results
+
     def add_request(self, prompt: str | list[int], sampling_params: SamplingParams):
         if isinstance(prompt, str):
             prompt = self.tokenizer.encode(prompt)
@@ -145,6 +431,9 @@ class LLMEngine:
         profile: bool = False,
         profile_dir: str | None = None,
     ) -> list[str]:
+        # Dream uses native diffusion_generate
+        if self.config.model_type == "dream":
+            return self._generate_dream(prompts, sampling_params, use_tqdm=use_tqdm)
         # ... (This method remains largely the same, but the progress bar will update differently) ...
         # The logic inside the `while not self.is_finished()` loop correctly calls `self.step()`
         # and collects outputs.
@@ -207,6 +496,8 @@ class LLMEngine:
         profile: bool = False,
         profile_dir: str | None = None,
     ) -> list[str]:
+        if self.config.model_type == "dream":
+            return self._generate_dream(prompts, sampling_params, use_tqdm=use_tqdm)
         """
         Stream prompts through the engine while keeping up to `max_active` sequences running.
         As sequences finish, new prompts are added from the pending list to maximize GPU utilization.

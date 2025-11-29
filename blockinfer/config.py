@@ -23,7 +23,7 @@ class Config:
     block_length: int = 4
     
     # Model type and strategy configuration
-    model_type: str = "auto"  # "auto", "sdar", "llada"
+    model_type: str = "auto"  # "auto", "sdar", "llada", "dream"
     sampling_method: str = "auto"  # "auto", "standard", "gumbel"
     use_kv_cache: bool = True
     use_cuda_graphs: bool = True
@@ -50,6 +50,8 @@ class Config:
             
             if "llada" in model_name_lower or "llada" in hf_model_type:
                 self.model_type = "llada"
+            elif "dream" in model_name_lower or "dream" in hf_model_type:
+                self.model_type = "dream"
             elif "sdar" in hf_model_type:
                 self.model_type = "sdar"
             else:
@@ -64,8 +66,8 @@ class Config:
                 self.sampling_method = "standard"
         
         # Configure KV cache and CUDA graphs based on model type
-        if self.model_type == "llada":
-            # LLaDA doesn't use KV cache or CUDA graphs in vanilla implementation
+        if self.model_type in ("llada", "dream"):
+            # LLaDA/Dream don't use KV cache or CUDA graphs in vanilla implementations
             self.use_kv_cache = False
             self.use_cuda_graphs = False
             # Set a minimal value for BlockManager (not actually used for KV cache)

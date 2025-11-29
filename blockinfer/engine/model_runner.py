@@ -10,6 +10,7 @@ from blockinfer.engine.sequence import Sequence, RunType, SequenceStatus
 from blockinfer.models.sdar import SDARForCausalLM
 from blockinfer.models.sdar_moe import SDARMoeForCausalLM
 from blockinfer.models.llada_vanilla import LLaDAVanillaForCausalLM
+from blockinfer.models.dream_vanilla import DreamVanillaForCausalLM
 from blockinfer.utils.context import set_context, get_context, reset_context
 from blockinfer.utils.loader import load_model
 
@@ -33,15 +34,20 @@ class ModelRunner:
         default_dtype = torch.get_default_dtype()
         
         # Load model based on model type
-        if config.model_type == "llada":
-            # LLaDA uses bfloat16 and vanilla transformers
-            torch.set_default_dtype(torch.bfloat16)
+        if config.model_type in ("llada", "dream"):
+            dtype = getattr(hf_config, "torch_dtype", torch.bfloat16)
+            if isinstance(dtype, str):
+                dtype = getattr(torch, dtype, torch.bfloat16)
+            if dtype is None:
+                dtype = torch.bfloat16
+            torch.set_default_dtype(dtype)
             torch.set_default_device("cuda")
-            print(f"Loading LLaDA model from {config.model}...")
-            self.model = LLaDAVanillaForCausalLM(config.model)
+            model_cls = LLaDAVanillaForCausalLM if config.model_type == "llada" else DreamVanillaForCausalLM
+            print(f"Loading {config.model_type.upper()} model from {config.model}...")
+            self.model = model_cls(config.model)
             self.model = self.model.cuda()
             self.model.eval()
-            print(f"LLaDA model loaded. Config: {self.model.config}")
+            print(f"{config.model_type.upper()} model loaded. Config: {self.model.config}")
         else:
             # SDAR models
             torch.set_default_dtype(hf_config.torch_dtype)
@@ -237,8 +243,8 @@ class ModelRunner:
         return self.model.compute_logits(self.model(input_ids, positions))
 
     def run(self, seqs: list[Sequence], run_type: RunType) -> torch.Tensor:
-        # LLaDA uses a different inference path (no KV cache)
-        if self.config.model_type == "llada":
+        # LLaDA (and Dream treated as LLaDA) use a different inference path (no KV cache)
+        if self.config.model_type in ("llada", "dream"):
             return self._run_llada(seqs, run_type)
         
         # Standard SDAR inference with KV cache
@@ -329,4 +335,3 @@ class ModelRunner:
             block_tables=block_tables,
             outputs=outputs,
         )
-

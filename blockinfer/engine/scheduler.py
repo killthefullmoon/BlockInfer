@@ -70,6 +70,7 @@ def get_transfer_index_llada(
     return x0, transfer_index
 
 
+
 class Scheduler:
 
     def __init__(self, config: Config):
@@ -77,6 +78,7 @@ class Scheduler:
         self.max_num_seqs = config.max_num_seqs
         self.max_num_batched_tokens = config.max_num_batched_tokens
         self.eos = config.eos
+        self.pad = getattr(config.hf_config, "pad_token_id", None)
         self.mask_token_id = config.mask_token_id
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
         self.running: list[Sequence] = []
@@ -275,7 +277,7 @@ class Scheduler:
         self.running = [seq for seq in self.running if not seq.is_finished]
         for seq in finished_seqs:
             self.block_manager.deallocate(seq)
-    
+
     def _postprocess_gumbel(self, seqs: list[Sequence], logits: torch.Tensor):
         """
         Postprocess using LLaDA's Gumbel sampling strategy.
@@ -302,13 +304,28 @@ class Scheduler:
                     seq.num_to_transfer = 0
                     start_idx += block_len
                     continue
-                
+
                 # Get logits for this sequence's block
                 block_logits = logits[start_idx : start_idx + block_len]
-                
+                # For Dream, suppress eos/pad to reduce collapse
+                if getattr(self.config, "model_type", "") == "dream":
+                    block_logits = block_logits.clone()
+                    if self.eos is not None and 0 <= self.eos < block_logits.size(-1):
+                        block_logits[:, self.eos] = float("-inf")
+                    if self.pad is not None and self.pad != self.eos and 0 <= self.pad < block_logits.size(-1):
+                        block_logits[:, self.pad] = float("-inf")
+
+                # Suppress eos/pad for Dream
+                if getattr(self.config, "model_type", "") == "dream":
+                    block_logits = block_logits.clone()
+                    if self.eos is not None and 0 <= self.eos < block_logits.size(-1):
+                        block_logits[:, self.eos] = float("-inf")
+                    if self.pad is not None and self.pad != self.eos and 0 <= self.pad < block_logits.size(-1):
+                        block_logits[:, self.pad] = float("-inf")
+
                 # Determine how many tokens to transfer
                 num_to_transfer = seq.num_transfer_tokens_per_step[seq.current_denoising_step]
-                
+
                 # Use LLaDA's sampling approach
                 x0, transfer_index = get_transfer_index_llada(
                     logits=block_logits,
@@ -319,23 +336,23 @@ class Scheduler:
                     num_transfer_tokens=num_to_transfer,
                     mask_token_id=self.mask_token_id,
                 )
-                
+
                 # Update block with transferred tokens
                 if transfer_index.any():
                     current_block_tensor[transfer_index] = x0[transfer_index]
                 seq.intermediate_block_tokens = current_block_tensor.tolist()
-                
+
                 seq.current_denoising_step += 1
-                
+
                 # Check if block is fully denoised
                 is_fully_denoised = (self.mask_token_id not in seq.intermediate_block_tokens) or \
                                     (seq.current_denoising_step >= seq.denoising_steps)
-                
+
                 if is_fully_denoised:
                     remaining_masks = seq.intermediate_block_tokens.count(self.mask_token_id)
                     print(f"[Debug] Seq {seq.seq_id} block finished after {seq.current_denoising_step} steps; remaining masks={remaining_masks}")
                     seq.status = SequenceStatus.FINISHED if seq.is_finished else SequenceStatus.SAVING
-                
+
                 seq.num_to_transfer = transfer_index.sum().item()
                 
             elif seq.status == SequenceStatus.SAVING:
