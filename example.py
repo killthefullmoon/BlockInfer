@@ -4,12 +4,11 @@ from transformers import AutoTokenizer
 
 
 def main():
-    #/mnt/shared-storage-user/bianyihan/volc/models
-    path = os.path.expanduser("/mnt/shared-storage-user/bianyihan/volc/models/SDAR-4B-Chat") # Path to your local model
+    path = os.path.expanduser("/home/killt/workspace/BlockInfer/models/SDAR-4B-Chat") # Path to your local model
     tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
-    llm = LLM(path, enforce_eager=False, tensor_parallel_size=1, mask_token_id=151669, block_length=4) # Must set mask_token_id & block_length
+    llm = LLM(path, enforce_eager=False, tensor_parallel_size=1, mask_token_id=151669, block_length=4, gpu_memory_utilization=0.9) # Must set mask_token_id & block_length
     # sampling_params = SamplingParams(temperature=1.0, topk=0, topp=1.0, max_tokens=4096, remasking_strategy="low_confidence_dynamic", block_length=8, denoising_steps=8, dynamic_threshold=0.9)
-    sampling_params = SamplingParams(temperature=1.0, topk=0, topp=1.0, max_tokens=4096, remasking_strategy="entropy_bounded", block_length=4, denoising_steps=4, eb_threshold=0.6)
+    sampling_params = SamplingParams(temperature=1.0, topk=0, topp=1.0, max_tokens=256, remasking_strategy="entropy_bounded", block_length=4, denoising_steps=4, eb_threshold=0.6)
 
     prompts = [
         "Define\n\\[p = \\sum_{k = 1}^\\infty \\frac{1}{k^2} \\quad \\text{and} \\quad q = \\sum_{k = 1}^\\infty \\frac{1}{k^3}.\\]Find a way to write\n\\[\\sum_{j = 1}^\\infty \\sum_{k = 1}^\\infty \\frac{1}{(j + k)^3}\\]in terms of $p$ and $q.$\nPlease reason step by step, and put your final answer within \\boxed{}.\n",
@@ -37,12 +36,20 @@ def main():
         for prompt in prompts
     ]
     outputs = llm.generate_streaming([prompts[0]], sampling_params, max_active=64) # Example for single sample inference
-    outputs = llm.generate_streaming(prompts*20, sampling_params, max_active=128) # Example for batch inference
+    # outputs = llm.generate_streaming(prompts*20, sampling_params, max_active=128) # Example for batch inference
 
-    for prompt, output in zip(prompts, outputs):
-        print("\n")
-        print(f"Prompt: {prompt!r}")
-        print(f"Completion: {output['text']!r}")
+    with open("generated_tokens.txt", "w") as f:
+        for prompt, output in zip(prompts, outputs):
+            print("\n")
+            print(f"Prompt: {prompt!r}")
+            # print(f"Completion: {output['text']!r}")
+            
+            token_ids = output['token_ids']
+            print("Tokens:")
+            for token_id in token_ids:
+                token = tokenizer.decode([token_id])
+                print(f"{token!r}")
+                f.write(token + "\n")
 
 
 if __name__ == "__main__":

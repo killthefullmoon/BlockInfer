@@ -165,10 +165,9 @@ class Scheduler:
                         transfer_index[selected_token_indices] = True
                         num_to_transfer = k
 
-                    # update
-                    # In-place update on cached tensor, then sync back to list for IPC compatibility
                     if transfer_index.any():
                         current_block_tensor[transfer_index] = seq_x0[transfer_index]
+                    
                     seq.intermediate_block_tokens = current_block_tensor.tolist()
                     
                     seq.current_denoising_step += 1
@@ -188,6 +187,8 @@ class Scheduler:
                     seq.num_to_transfer = 0
                     if not seq.is_finished:
                         seq.start_new_block()
+                        if hasattr(seq, "_intermediate_block_tensor"):
+                            del seq._intermediate_block_tensor
 
                 start_idx += seq.block_length
                 

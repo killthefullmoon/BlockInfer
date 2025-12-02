@@ -1,0 +1,267 @@
+To
+ find
+ the
+ expression
+ for
+ $\
+sum
+_{
+j
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+sum
+_{
+k
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+frac
+{
+1
+}{
+(
+j
+ +
+ k
+)^
+3
+}$
+ in
+ terms
+ of
+ $
+p
+$
+ and
+ $
+q
+$,
+ we
+ start
+ by
+ rewriting
+ the
+ given
+ double
+ sum
+ in
+ a
+ more
+ manageable
+ form
+.
+
+
+First
+,
+ observe
+ that
+ the
+ sum
+ $\
+sum
+_{
+j
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+frac
+_{
+k
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+frac
+{
+1
+}{
+(
+j
+ +
+ k
+)^
+3
+}$
+ can
+ be
+ interpreted
+ as
+ sum
+ming
+ over
+ all
+ pairs
+ $(
+j
+,
+ k
+)$
+ in
+ the
+ first
+ quadrant
+,
+ including
+ the
+ diagonal
+.
+ We
+ can
+ rewrite
+ this
+ by
+ changing
+ the
+ order
+ of
+ summ
+ation
+:
+
+
+$$
+
+
+\
+sum
+_{
+j
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+sum
+_{
+k
+ =
+ 
+1
+}
+^\
+in
+fty
+ \
+frac
+{
+1
+}{
+(
+j
+ +
+ k
+)^
+3
+}
+ =
+ 
+
+
+Notice
+ that
+ double
+ summ
+ation
+ $\
+sum
+_{
+j
+,
+ \
+ k
+,
+ \
+ j
++k
+>
+0
+}\
+frac
+{
+1
+}{
+(
+j
++k
+)^
+3
+}$
+can
+ be
+ arranged
+ as
+ sum
+ming
+ 
+1
+ on
+ the
+ diagonal
+ or
+ above
+ and
+ then
+ mirrored
+ below
+ it
+ (
+since
+ for
+ $
+j
++k
+>
+0
+$,
+ we
+ have
+ positive
+ terms
+).
+ Hence
+ we
+ proceed
+ by
+ considering
+ like
+ terms
+:
+
+
+$$
+
+
+\
+begin
+{
+aligned
+}
+
+\
+sum
+_{
+j
