@@ -1,8 +1,0 @@
-LICENSE
-README.md
-pyproject.toml
-blockinfer.egg-info/PKG-INFO
-blockinfer.egg-info/SOURCES.txt
-blockinfer.egg-info/dependency_links.txt
-blockinfer.egg-info/requires.txt
-blockinfer.egg-info/top_level.txt
