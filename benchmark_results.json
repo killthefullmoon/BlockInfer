@@ -1,27 +1,27 @@
 {
   "blockinfer": {
-    "total_time": 18.8106689453125,
-    "total_tokens": 256,
-    "throughput": 13.60929803954652,
-    "avg_latency": 18.8106689453125,
-    "num_prompts": 1,
-    "accuracy": 100.0,
-    "correct": 1,
-    "total": 1
+    "total_time": 244.35235285758972,
+    "total_tokens": 2560,
+    "throughput": 10.476674237272379,
+    "avg_latency": 24.43523528575897,
+    "num_prompts": 10,
+    "accuracy": 70.0,
+    "correct": 7,
+    "total": 10
   },
   "vanilla_llada": {
-    "total_time": 25.7020103931427,
-    "total_tokens": 256,
-    "throughput": 9.960310344762012,
-    "avg_latency": 25.7020103931427,
-    "num_prompts": 1,
-    "accuracy": 100.0,
-    "correct": 1,
-    "total": 1
+    "total_time": 241.3016119003296,
+    "total_tokens": 2560,
+    "throughput": 10.609129296067099,
+    "avg_latency": 24.130161190032958,
+    "num_prompts": 10,
+    "accuracy": 80.0,
+    "correct": 8,
+    "total": 10
   },
   "comparison": {
-    "throughput_speedup": 1.3663528111554735,
-    "time_speedup": 1.3663528111554735,
-    "accuracy_diff": 0.0
+    "throughput_speedup": 0.9875149925033129,
+    "time_speedup": 0.987514992503313,
+    "accuracy_diff": -10.0
   }
 }

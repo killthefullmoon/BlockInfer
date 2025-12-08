@@ -255,8 +255,6 @@ class Scheduler:
                                         (seq.current_denoising_step >= seq.denoising_steps)
 
                     if is_fully_denoised:
-                        remaining_masks = seq.intermediate_block_tokens.count(self.mask_token_id)
-                        print(f"[Debug] Seq {seq.seq_id} block finished after {seq.current_denoising_step} steps; remaining masks={remaining_masks}; mask_id={self.mask_token_id}; sample={seq.intermediate_block_tokens[:4]}")
                         # Block is done, commit it and check if generation is finished
                         seq.status = SequenceStatus.FINISHED if seq.is_finished else SequenceStatus.SAVING
                     seq.num_to_transfer = num_to_transfer
@@ -332,8 +330,6 @@ class Scheduler:
                                     (seq.current_denoising_step >= seq.denoising_steps)
                 
                 if is_fully_denoised:
-                    remaining_masks = seq.intermediate_block_tokens.count(self.mask_token_id)
-                    print(f"[Debug] Seq {seq.seq_id} block finished after {seq.current_denoising_step} steps; remaining masks={remaining_masks}")
                     seq.status = SequenceStatus.FINISHED if seq.is_finished else SequenceStatus.SAVING
                 
                 seq.num_to_transfer = transfer_index.sum().item()

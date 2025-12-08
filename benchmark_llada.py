@@ -167,7 +167,7 @@ def calculate_accuracy(outputs, questions):
     return accuracy, correct, total, results_detail
 
 
-def load_dataset(dataset_path, num_samples=None, filter_source=None):
+def load_dataset(dataset_path, num_samples=None, filter_source=None, skip_samples=0):
     """
     Load questions from sample_200.jsonl.
     
@@ -175,14 +175,21 @@ def load_dataset(dataset_path, num_samples=None, filter_source=None):
         dataset_path: Path to the dataset file
         num_samples: Maximum number of samples to load (per source if filtering)
         filter_source: Filter by source type (e.g., 'gsm8k', 'mmlu', 'math500', 'longbench_hotpotqa')
+        skip_samples: Number of samples to skip at the beginning
     """
     questions = []
+    skipped = 0
     with open(dataset_path, 'r') as f:
         for line in f:
             data = json.loads(line.strip())
             
             # Apply source filter if specified
             if filter_source and data.get('source', '') != filter_source:
+                continue
+            
+            # Skip first N samples
+            if skipped < skip_samples:
+                skipped += 1
                 continue
             
             questions.append({
@@ -204,10 +211,15 @@ def benchmark_blockinfer(model_path, questions, sampling_params, tokenizer):
     
     # Initialize BlockInfer LLM
     print("Loading BlockInfer LLM...")
+    tp_size_env = int(os.environ.get("TENSOR_PARALLEL_SIZE", "1"))
+    if tp_size_env > 1:
+        print(f"TENSOR_PARALLEL_SIZE={tp_size_env} requested, but LLaDA backend only supports single-process; falling back to 1.")
+    tp_size = 1
+    print(f"Using tensor parallel size: {tp_size}")
     llm = LLM(
         model_path,
         enforce_eager=True,
-        tensor_parallel_size=1,
+        tensor_parallel_size=tp_size,
         mask_token_id=126336,
         block_length=sampling_params.block_length
     )
@@ -271,6 +283,10 @@ def benchmark_vanilla_llada(model_path, questions, max_tokens, tokenizer):
     print("\n" + "="*80)
     print("BENCHMARKING: Vanilla LLaDA (Non-Block Diffusion)")
     print("="*80)
+    vanilla_dp_size = max(1, int(os.environ.get("VANILLA_DATA_PARALLEL_SIZE", "1")))
+    available_gpus = torch.cuda.device_count()
+    device_ids = list(range(min(vanilla_dp_size, available_gpus))) if available_gpus > 0 else []
+    primary_device = torch.device(f"cuda:{device_ids[0]}") if device_ids else torch.device("cpu")
     
     # Import the original LLaDA generate function
     llada_path = Path(__file__).parent.parent / "LLaDA"
@@ -288,7 +304,13 @@ def benchmark_vanilla_llada(model_path, questions, max_tokens, tokenizer):
         model_path,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16
-    ).cuda().eval()
+    ).to(primary_device).eval()
+    
+    if len(device_ids) > 1:
+        print(f"Enabling DataParallel for vanilla LLaDA on devices: {device_ids}")
+        model = torch.nn.DataParallel(model, device_ids=device_ids)
+    else:
+        print("Running vanilla LLaDA on a single GPU")
     
     # Prepare prompts with dataset-specific formatting
     formatted_questions = [format_prompt_for_dataset(q) for q in questions]
@@ -300,7 +322,7 @@ def benchmark_vanilla_llada(model_path, questions, max_tokens, tokenizer):
         add_generation_prompt=True,
         tokenize=False
     )
-    test_input_ids = torch.tensor([tokenizer.encode(test_prompt)]).cuda()
+    test_input_ids = torch.tensor([tokenizer.encode(test_prompt)]).to(primary_device)
     
     # Vanilla LLaDA: block_length = gen_length (all tokens at once, no block division)
     # This is the KEY difference from BlockInfer
@@ -328,7 +350,7 @@ def benchmark_vanilla_llada(model_path, questions, max_tokens, tokenizer):
             add_generation_prompt=True,
             tokenize=False
         )
-        input_ids = torch.tensor([tokenizer.encode(formatted_prompt)]).cuda()
+        input_ids = torch.tensor([tokenizer.encode(formatted_prompt)]).to(primary_device)
         
         # Vanilla LLaDA: Non-block diffusion (all tokens at once)
         # block_length = gen_length means no block division
@@ -506,6 +528,8 @@ def main():
                         help='Denoising steps per block for BlockInfer (default: 32)')
     parser.add_argument('--skip-vanilla', action='store_true',
                         help='Skip Vanilla LLaDA benchmark')
+    parser.add_argument('--skip-sample', type=int, default=0,
+                        help='Skip first N samples (for sequential processing)')
     parser.add_argument('--output', type=str, default='benchmark_results.json',
                         help='Output file for results')
     
@@ -534,7 +558,9 @@ def main():
     print(f"\nLoading dataset from {args.dataset}...")
     if args.source:
         print(f"Filtering by source: {args.source}")
-    questions = load_dataset(args.dataset, args.num_samples, args.source)
+    if args.skip_sample > 0:
+        print(f"Skipping first {args.skip_sample} samples")
+    questions = load_dataset(args.dataset, args.num_samples, args.source, args.skip_sample)
     print(f"Loaded {len(questions)} questions")
     
     # Show dataset statistics

@@ -1,0 +1,27 @@
+{
+  "blockinfer": {
+    "total_time": 18.42807674407959,
+    "total_tokens": 256,
+    "throughput": 13.891845771819103,
+    "avg_latency": 18.42807674407959,
+    "num_prompts": 1,
+    "accuracy": 0.0,
+    "correct": 0,
+    "total": 1
+  },
+  "vanilla_llada": {
+    "total_time": 21.828641891479492,
+    "total_tokens": 256,
+    "throughput": 11.727710833898744,
+    "avg_latency": 21.828641891479492,
+    "num_prompts": 1,
+    "accuracy": 0.0,
+    "correct": 0,
+    "total": 1
+  },
+  "comparison": {
+    "throughput_speedup": 1.18453174439337,
+    "time_speedup": 1.18453174439337,
+    "accuracy_diff": 0.0
+  }
+}
