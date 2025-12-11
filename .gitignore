@@ -46,10 +46,11 @@ env/
 .coverage
 htmlcov/
 
-# Model cache
-models/
+# Model cache (external downloaded models, not blockinfer/models/)
+/models/
 hub/
 .cache/
+!blockinfer/models/
 
 # Logs
 *.log
