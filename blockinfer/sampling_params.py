@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional, List
 
 @dataclass
 class SamplingParams:
@@ -14,11 +14,5 @@ class SamplingParams:
     eb_threshold: float = 0.35
     topk: int = 0
     topp: float = 1
-    remasking_strategy: Literal['sequential', 'low_confidence_static', 'low_confidence_dynamic', 'entropy_bounded', 'random', 'low_confidence'] = 'low_confidence_static'
-    stop_words: list[int] | None = None
-    
-    # LLaDA-specific parameters
-    cfg_scale: float = 0.0  # Classifier-free guidance scale
-    logits_eos_inf: bool = False  # Set EOS logits to -inf during generation
-    confidence_eos_eot_inf: bool = False  # Set EOS/EoT confidence to -inf for remasking
-
+    remasking_strategy: Literal['sequential', 'low_confidence_static', 'low_confidence_dynamic', 'entropy_bounded'] = 'low_confidence_static'
+    stop_words: Optional[List[int]] = None

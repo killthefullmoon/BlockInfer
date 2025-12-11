@@ -20,22 +20,37 @@ class Sequence:
     block_size = 256
     counter = count()
 
-    def __init__(self, prompt_token_ids: list[int], mask_token_id: int, sampling_params=SamplingParams()):
+    def __init__(
+        self,
+        prompt_token_ids: list[int],
+        mask_token_id: int,
+        sampling_params=SamplingParams(),
+        model_type: str = "sdar",
+    ):
         self.seq_id = next(Sequence.counter)
         self.block_length = sampling_params.block_length
         self.prompt_token_ids = prompt_token_ids
         prompt_len = len(self.prompt_token_ids)
+        self.model_type = model_type
         
-        self.num_prefill_tokens = (prompt_len // self.block_length) * self.block_length
-        prefill_part = self.prompt_token_ids[:self.num_prefill_tokens]
-        
-        first_denoise_part = self.prompt_token_ids[self.num_prefill_tokens:]
-        
+        if model_type in ("llada", "dream"):
+            # LLaDA-style: prefill covers the full prompt; denoising starts from a fresh masked block
+            self.num_prefill_tokens = prompt_len
+            prefill_part = list(self.prompt_token_ids)
+            first_denoise_part: list[int] = []
+        else:
+            self.num_prefill_tokens = (prompt_len // self.block_length) * self.block_length
+            prefill_part = self.prompt_token_ids[:self.num_prefill_tokens]
+            first_denoise_part = self.prompt_token_ids[self.num_prefill_tokens:]
+
         self.token_ids = prefill_part
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = prompt_len # Keep track of the original full prompt length
         
-        self.intermediate_block_tokens = first_denoise_part + [mask_token_id] * (self.block_length - len(first_denoise_part))
+        if model_type in ("llada", "dream"):
+            self.intermediate_block_tokens = [mask_token_id] * self.block_length
+        else:
+            self.intermediate_block_tokens = first_denoise_part + [mask_token_id] * (self.block_length - len(first_denoise_part))
         self.num_to_transfer = 0
         self.current_denoising_step = 0
         
@@ -80,6 +95,10 @@ class Sequence:
     def start_new_block(self):
         self.current_denoising_step = 0
         self.intermediate_block_tokens = [self.mask_token_id] * self.block_length
+        if hasattr(self, "_intermediate_block_tensor"):
+            delattr(self, "_intermediate_block_tensor")
+        if hasattr(self, "_transfer_index"):
+            delattr(self, "_transfer_index")
         self.status = SequenceStatus.DENOISING
 
     def commit_block(self, block_tokens: list[int]):
@@ -160,5 +179,4 @@ class Sequence:
     def __setstate__(self, state):
         (self.seq_id, self.status, self.token_ids, self.num_tokens, self.num_prompt_tokens, 
          self.num_cached_tokens, self.block_table, self.intermediate_block_tokens, self.current_denoising_step) = state
-
 
