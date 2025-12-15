@@ -67,3 +67,5 @@ python SDAR_benchmark.py \
 - Dataset rows should include `question`, `answer`, `source`, and optional `choices` (for `mmlu`).
 - Use `--dataset-name` to target a single source; `--use-streaming` and `--max-active` enable streaming for BlockInfer.
 - `--skip-blockinfer` or `--skip-vanilla` skip either side of the comparison; results are written to `benchmark_sdar_results.json` (or `--output`).
+
+### For LLada Benchmark, please see llada_imporvements branch
