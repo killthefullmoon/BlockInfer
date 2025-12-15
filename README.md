@@ -97,29 +97,6 @@ for block in 16 32 64; do
 done
 ```
 
-## Output
-
-Results are saved to `benchmark_results.json`:
-
-```json
-{
-  "blockinfer": {
-    "total_time": 45.2,
-    "total_tokens": 6400,
-    "throughput": 141.6,
-    "avg_latency": 0.904,
-    "accuracy": 65.0
-  },
-  "vanilla_llada": {
-    "throughput": 52.3,
-    "accuracy": 64.0
-  },
-  "comparison": {
-    "throughput_speedup": 2.71,
-    "time_speedup": 2.71
-  }
-}
-```
 
 ## Dataset
 
@@ -144,25 +121,4 @@ BlockInfer/
 ├── sample_200.jsonl        # Benchmark dataset
 ├── run_benchmark.slurm     # SLURM job script
 └── utils.py                # Utility functions
-```
-
-## Model
-
-Default model: `GSAI-ML/LLaDA-8B-Instruct`
-
-The model will be downloaded automatically from HuggingFace on first run (~16GB).
-
-## GPU Requirements
-
-- **Minimum**: 1x A100 40GB or 2x V100 32GB
-- **Recommended**: 1x A100 80GB for faster inference
-
-## Citation
-
-```bibtex
-@article{llada2024,
-  title={LLaDA: Large Language Diffusion with mAsking},
-  author={...},
-  year={2024}
-}
 ```
